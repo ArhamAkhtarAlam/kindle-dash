@@ -1,0 +1,288 @@
+#!/bin/bash
+# Put things on the Kindle from your Mac (via the Pi).
+#
+#   kindle photo.jpg               show an image (jpg, png, heic, gif, webp, ...)
+#   kindle notes.txt               show a text file
+#   kindle "Back at 5pm"           show a message
+#   echo "hello" | kindle -        show text from a pipe
+#   kindle wttr   (or weather)     back to the weather dashboard
+#   kindle wttr2  (or weather2)    weather in wttr.in's v2 view (graph)
+#   kindle wttrmoon (weathermoon)  moon phase (wttr.in/moon)
+#   kindle status                  what is showing now
+#   kindle sim                     the dashboard in a window on this Mac, for testing (mouse = touch)
+#   kindle weathermap [rain|clouds|wind|temp] [state|country]   weather map with a time slider
+#   kindle mandelbrot [reset]      Mandelbrot set viewer: tap to zoom in, swipe to move
+#   kindle synth                   the Kindle as a keyboard, sound from this Mac (kindle synth test: sound check)
+#   kindle osu [song] | add FILE.osz | list | demo | offset MS   osu! (the song plays on the Mac)
+#   kindle doom [gray] [wad]       DOOM on the Kindle (touch buttons); kindle doom stop | wads | wad FILE
+#   kindle todo                    show the to-do list (tap a row on the Kindle to tick it)
+#   kindle todo add "buy milk"     add / remove / done / clear / list
+#   kindle reminders add "Stretch" 9:00am [Mon,Wed]   once, or on those days
+#   kindle reminders [remove|dismiss|test]
+#   kindle slides                  slideshow (swipe left/right on the Kindle); also: slideshow
+#   kindle slides add ~/Pictures/x.jpg [fit|fill]   fit = whole picture, fill = fill the screen
+#   kindle slides list | show "name" | remove "name"
+#   kindle slides fill [name]      switch all pictures (or one) to fill the screen; fit = back
+#   kindle home                    Home (the default): clock, weather, to-dos, coming up, Pi vitals
+#   kindle clock [analog|digital|both]   clock face and/or digital time (tap it to switch)
+#   kindle feeds                   RSS feeds (swipe left/right; tap a headline to read it)
+#   kindle feeds add URL ["Name"] [headlines|image]   also: list, show, remove, refresh
+#   kindle xkcd                    the xkcd feed
+#   kindle calendar                month + agenda (swipe left/right for other weeks)
+#   kindle calendar add "ICAL_LINK" "Name"   also: list, remove, next, prev, today
+#   kindle brightness 40%          front light (also: off, max, up, down)
+#   kindle wifi [on|off]           Kindle Wi-Fi (used when the USB cable is unplugged)
+#   kindle video ~/Movies/clip.mp4 play a video (sound on the Mac); tap the Kindle to stop
+#   kindle badapple                Bad Apple, from ~/Documents/bad apple/badapple.mp4
+#   kindle mirror [gray]           mirror this Mac's screen (Ctrl+C or tap the Kindle to stop)
+#   kindle mirror pi [gray]        the Kindle becomes the Raspberry Pi's screen
+#   kindle yt "YOUTUBE_LINK" [gray]   watch a YouTube video on the Kindle (sound on this Mac)
+#   kindle games [chess|checkers|ttt|c4|reversi|battleship|sudoku|mines] [pi|2p] [easy|normal|hard]
+#   kindle spotify                 now playing + buttons; also: setup, play, pause, next, prev, volume 40
+#   kindle draw                    drawing pad; "kindle draw save" downloads the drawing here
+#   kindle timer [25m|pause|resume|reset|add 5m]   countdown (buttons on the Kindle too)
+#   kindle dark [on|off]           dark mode (photos and slides stay normal)
+#   kindle stats                   Pi stats screen (CPU, temperature, memory, disk, network)
+#   kindle speedtest [down|up]     internet speed test from the Pi (~10 s each)
+#   kindle hackers                 the honeypot's password of the day and today's attacks
+#   kindle backup [list|restore DATE]   back up the Pi's data to ~/Documents/Kindle Backups
+#   kindle update                  send the latest code to the Pi, update these commands, restart
+#   kindle kiosk on|off            pause/resume the Kindle's own UI (needed for taps)
+#
+# Add --minutes N to switch back to the weather after N minutes:
+#   kindle "In a meeting" --minutes 45
+set -euo pipefail
+
+PI="${KINDLE_PI:-arham@arham-pi}"
+DASH="${KINDLE_DASH:-kindle-dash}"          # folder on the Pi, relative to ~
+SHOW="~/$DASH/venv/bin/python ~/$DASH/show.py"
+
+if [ $# -eq 0 ] || [ "$1" = -h ] || [ "$1" = --help ]; then
+    sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+fi
+
+what="$1"; shift
+extra=""
+for a in "$@"; do extra="$extra $(printf '%q' "$a")"; done   # --minutes N, --no-push
+
+case "$what" in
+    weather|wttr|weather2|wttr2|weathermoon|wttrmoon|status|todo|reminders|reminder|clock|xkcd|feeds|feed|rss|calendar|cal|games|game|brightness|light|health|wifi|timer|dark|stats|speedtest|mandelbrot|mandel|fractal|weathermap|wmap|map|home|hackers|honeypot)
+        exec ssh "$PI" "$SHOW $what$extra" ;;
+    kiosk)
+        exec ssh "$PI" "~/$DASH/kiosk.sh$extra" ;;
+    synth)
+        # the Kindle as a keyboard, the sound from this Mac (kindle synth test: a sound check)
+        proj="${KINDLE_PROJECT:-$HOME/Documents/kindle tool/kindle-dash}"
+        py="$HOME/Library/Application Support/Kindle Sim/venv/bin/python"
+        [ -x "$py" ] || { echo "run kindle sim once first (it sets up the Python the synth uses)"; exit 1; }
+        exec "$py" "$proj/mac/synth.py" "$@" ;;
+    osu)
+        # osu! on the Kindle; the song plays on this Mac (kindle osu help)
+        exec "$HOME/bin/kindle-osu" "$@" ;;
+    doom)
+        # DOOM on the Kindle (runs on the Pi). kindle doom [fast|gray] [wad] | stop | wads | wad FILE
+        if [ "${1:-}" = wad ]; then
+            [ -f "${2:-}" ] || { echo "usage: kindle doom wad ~/Downloads/doom1.wad"; exit 1; }
+            name=$(basename "$2" | tr 'A-Z' 'a-z')
+            ssh "$PI" "mkdir -p ~/$DASH/doom/wads" && scp -q "$2" "$PI:$DASH/doom/wads/$name" \
+                && echo "added ${name%.wad} (start it with: kindle doom ${name%.wad})"
+            exit $?
+        fi
+        exec ssh "$PI" "cd ~/$DASH && venv/bin/python doom.py$extra" ;;
+    sim)
+        # the dashboard on this Mac, in a window (for testing; nothing goes to the Kindle)
+        app="$HOME/Applications/Kindle Sim.app"
+        if [ ! -d "$app" ]; then
+            proj="${KINDLE_PROJECT:-$HOME/Documents/kindle tool/kindle-dash}"
+            "$proj/mac/sim/install.sh" || exit 1
+        fi
+        exec open "$app" ;;
+    backup)
+        exec "$HOME/bin/kindle-backup" "$@" ;;
+    update)
+        # 1) code from the project folder on this Mac to the Pi. Adds/replaces code files only:
+        #    no --delete, and data/venv folders are excluded, so nothing on the Pi is removed.
+        proj="${KINDLE_PROJECT:-$HOME/Documents/kindle tool/kindle-dash}"
+        [ -f "$proj/show.py" ] || { echo "project folder not found: $proj"; exit 1; }
+        # never send broken code: one bad keystroke in a file takes the whole dashboard down
+        broken=""
+        for f in "$proj"/*.py; do
+            /usr/bin/python3 -c "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])" "$f" 2>/dev/null \
+                || broken="$broken $(basename "$f")"
+        done
+        if [ -n "$broken" ]; then
+            echo "not updating: these files have errors:$broken"
+            for f in $broken; do /usr/bin/python3 -c "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])" "$proj/$f" 2>&1 | tail -3; done
+            exit 1
+        fi
+        echo "sending code to the Pi..."
+        rsync -a --exclude venv --exclude out --exclude slides --exclude feeds \
+            --exclude calendar --exclude spotify --exclude draw --exclude video --exclude kindle-files \
+            --exclude inbox --exclude sim --exclude __pycache__ --exclude dashboard.timer --exclude .DS_Store \
+            --exclude '*.pyc' -i "$proj/" "$PI:$DASH/" | grep -E '^<f' | sed 's/^<f[^ ]* /  updated: /' || echo "  (code already up to date)"
+        # 2) these Mac commands
+        # Copy to a temp name, then rename: this very script is running from ~/bin/kindle, and
+        # overwriting it in place would make bash read the rest of it from the new file.
+        for f in kindle kindle-watch kindle-backup kindle-osu; do
+            [ -f "$proj/mac/$f" ] || continue
+            cp "$proj/mac/$f" "$HOME/bin/.$f.new" && chmod +x "$HOME/bin/.$f.new" && mv -f "$HOME/bin/.$f.new" "$HOME/bin/$f"
+        done
+        echo "updated ~/bin/kindle, kindle-watch, kindle-backup"
+        # 3) restart the Pi services (no password if the sudoers rule is installed, see README)
+        ssh -t "$PI" 'sudo -n systemctl restart kindle-touch.service dashboard.timer 2>/dev/null \
+            || sudo systemctl restart kindle-touch.service dashboard.timer' \
+            && echo "restarted the Pi services"
+        exit 0 ;;                                   # (without this it fell through and showed "update" as a message)
+    spotify)
+        if [ "${1:-}" != setup ]; then exec ssh "$PI" "$SHOW spotify$extra"; fi
+        echo "1. Open https://developer.spotify.com/dashboard and click Create app."
+        echo "   Redirect URI: http://127.0.0.1:8888/callback   (tick Web API, then Save)"
+        read -r -p "2. Paste the Client ID: " cid
+        read -r -s -p "3. Paste the Client secret (hidden): " secret; echo
+        url=$(ssh "$PI" "~/$DASH/venv/bin/python ~/$DASH/spotify.py setup $(printf '%q' "$cid") $(printf '%q' "$secret")")
+        case "$url" in https://accounts.spotify.com/*) ;; *) echo "$url"; exit 1 ;; esac
+        echo "4. Log in to Spotify in the browser window that opens..."
+        # Catch Spotify's redirect to 127.0.0.1:8888 on this Mac and pass the code to the Pi.
+        code=$(python3 - "$url" <<'PY'
+import http.server, sys, urllib.parse, webbrowser
+code = []
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        code.extend(q.get("code", []))
+        self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+        self.wfile.write(b"<h2>Done - you can close this tab.</h2>" if code else b"<h2>Login cancelled.</h2>")
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", 8888), H)
+webbrowser.open(sys.argv[1])
+srv.timeout = 300
+srv.handle_request()
+print(code[0] if code else "")
+PY
+)
+        [ -n "$code" ] || { echo "no login code received"; exit 1; }
+        exec ssh "$PI" "~/$DASH/venv/bin/python ~/$DASH/spotify.py code $(printf '%q' "$code")" ;;
+    draw)
+        if [ "${1:-}" = save ]; then
+            remote=$(ssh "$PI" "$SHOW draw save") || exit 1
+            mkdir -p "$HOME/Pictures/Kindle Drawings"
+            scp -q "$PI:$remote" "$HOME/Pictures/Kindle Drawings/" && open "$HOME/Pictures/Kindle Drawings/$(basename "$remote")"
+            echo "saved to ~/Pictures/Kindle Drawings/$(basename "$remote")"
+            exit 0
+        fi
+        exec ssh "$PI" "$SHOW draw$extra" ;;
+    mirror)
+        if [ "${1:-}" = pi ]; then
+            mode="${2:-fast}"; [ "$mode" = gray ] || mode=fast
+            exec ssh -t "$PI" "~/$DASH/venv/bin/python ~/$DASH/mirror.py pi $mode"   # -t: Ctrl+C reaches it
+        fi
+        mode="${1:-fast}"; [ "$mode" = gray ] || mode=fast
+        FPS_MAX=4                                   # don't capture faster than this
+        tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+        # Test one capture first: macOS asks for Screen Recording permission the first time.
+        if ! screencapture -x -C -t jpg "$tmp/test.jpg" 2>/dev/null || [ ! -s "$tmp/test.jpg" ]; then
+            echo "macOS blocked the screenshot. Allow Terminal in System Settings > Privacy &"
+            echo "Security > Screen Recording, then run this again."
+            exit 1
+        fi
+        echo "mirroring this screen to the Kindle ($mode). Ctrl+C or tap the Kindle to stop."
+        # Frames: 10-digit byte count + JPEG, all over one ssh connection.
+        while :; do
+            screencapture -x -C -t jpg "$tmp/f.jpg" 2>/dev/null || break
+            sips -Z 1448 -s formatOptions 70 "$tmp/f.jpg" --out "$tmp/s.jpg" >/dev/null 2>&1 || break
+            printf '%010d' "$(stat -f%z "$tmp/s.jpg")"; cat "$tmp/s.jpg"
+            sleep "$(echo "scale=2; 1/$FPS_MAX" | bc)"
+        done | ssh "$PI" "~/$DASH/venv/bin/python ~/$DASH/mirror.py receive $mode"
+        exit 0 ;;
+    yt|youtube)
+        url="${1:-}"; mode="${2:-fast}"; [ "$mode" = gray ] || mode=fast
+        [ -n "$url" ] || { echo 'usage: kindle yt "https://www.youtube.com/watch?v=..." [gray]'; exit 1; }
+        command -v yt-dlp >/dev/null || { echo "needs yt-dlp: brew install yt-dlp"; exit 1; }
+        mkdir -p "$HOME/Movies/Kindle"
+        echo "downloading (low resolution is plenty for e-ink)..."
+        # 480p or less, AAC audio so macOS can play the sound; kept in ~/Movies/Kindle for rewatching
+        file=$(yt-dlp -q --no-warnings --no-playlist \
+            -f "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]/b[height<=480]/b" \
+            --merge-output-format mp4 -o "$HOME/Movies/Kindle/%(title).60s [%(id)s].%(ext)s" \
+            --print after_move:filepath "$url") || { echo "download failed"; exit 1; }
+        [ -f "$file" ] || { echo "download failed"; exit 1; }
+        echo "got: $(basename "$file")"
+        ssh "$PI" "mkdir -p ~/$DASH/inbox"
+        scp -q "$file" "$PI:$DASH/inbox/yt.mp4"
+        trap '[ -f /tmp/kindle-audio.pid ] && kill "$(cat /tmp/kindle-audio.pid)" 2>/dev/null; rm -f /tmp/kindle-audio.pid' EXIT INT TERM
+        echo "playing on the Kindle (tap its screen or press Ctrl+C to stop)..."
+        # The Pi decodes it in real time and streams frames; it prints START when the first is up.
+        ssh "$PI" "~/$DASH/venv/bin/python ~/$DASH/mirror.py video ~/$DASH/inbox/yt.mp4 $mode; rm -f ~/$DASH/inbox/yt.mp4" \
+        | while IFS= read -r line; do
+            case "$line" in
+                START) if [ -z "${KINDLE_NO_SOUND:-}" ]; then afplay "$file" & echo $! > /tmp/kindle-audio.pid; fi ;;
+                *) echo "$line" ;;
+            esac
+        done
+        exit 0 ;;
+    video|badapple)
+        if [ "$what" = badapple ]; then src="$HOME/Documents/bad apple/badapple.mp4"; else src="${1:-}"; fi
+        if [ "$src" = stop ]; then exec ssh "$PI" "~/$DASH/venv/bin/python ~/$DASH/video.py stop"; fi
+        [ -f "$src" ] || { echo "usage: kindle video ~/Movies/clip.mp4   (no file at: $src)"; exit 1; }
+        name=$(basename "$src"); name="${name%.*}"; name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '_')
+        VIDEO="~/$DASH/venv/bin/python ~/$DASH/video.py"
+        # Convert + copy to the Kindle only the first time.
+        if ! ssh "$PI" "$VIDEO list" | grep -q "^  $name  .*fps)$"; then
+            ssh "$PI" "mkdir -p ~/$DASH/inbox"
+            echo "uploading $(basename "$src") to the Pi..."
+            scp -q "$src" "$PI:$DASH/inbox/video.${src##*.}"
+            ssh "$PI" "$VIDEO prepare ~/$DASH/inbox/video.${src##*.} $name && rm -f ~/$DASH/inbox/video.*" || exit 1
+        fi
+        # Sound plays on the Mac (the Kindle has no speaker), starting with the first frame.
+        trap '[ -f /tmp/kindle-audio.pid ] && kill "$(cat /tmp/kindle-audio.pid)" 2>/dev/null; rm -f /tmp/kindle-audio.pid' EXIT INT TERM
+        echo "playing on the Kindle (tap its screen or press Ctrl+C to stop)..."
+        ssh "$PI" "$VIDEO play $name" | while IFS= read -r line; do
+            case "$line" in
+                START) if [ -z "${KINDLE_NO_SOUND:-}" ]; then afplay "$src" & echo $! > /tmp/kindle-audio.pid; fi ;;
+                DONE*) echo "${line#DONE }" ;;
+                *) echo "$line" ;;
+            esac
+        done
+        exit 0 ;;                                # (the trap stops the sound)
+    slides|slideshow)
+        if [ "${1:-}" != add ]; then exec ssh "$PI" "$SHOW slides$extra"; fi
+        [ $# -ge 2 ] && [ -f "$2" ] || { echo 'usage: kindle slides add ~/Pictures/photo.jpg [fit|fill]'; exit 1; }
+        src="$2"; mode="${3:-fit}"
+        name=$(basename "$src"); name="${name%.*}"
+        tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+        # sips (built into macOS) reads HEIC etc. and shrinks big photos for a quick upload
+        sips -s format png -Z 2000 "$src" --out "$tmp/slide.png" >/dev/null 2>&1 \
+            || { echo "can't read $src as an image"; exit 1; }
+        ssh "$PI" "mkdir -p ~/$DASH/inbox"
+        scp -q "$tmp/slide.png" "$PI:$DASH/inbox/slide.png"
+        ssh "$PI" "$SHOW slides add ~/$DASH/inbox/slide.png $(printf '%q' "$mode") --name $(printf '%q' "$name")"
+        exit $? ;;
+    -)
+        exec ssh "$PI" "$SHOW text --stdin$extra" ;;
+esac
+
+if [ -f "$what" ]; then
+    name=$(basename "$what")
+    ext=$(printf '%s' "${name##*.}" | tr '[:upper:]' '[:lower:]')
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    case "$ext" in
+        txt|md|text|log)
+            ssh "$PI" "mkdir -p ~/$DASH/inbox"
+            scp -q "$what" "$PI:$DASH/inbox/upload.txt"
+            exec ssh "$PI" "$SHOW text --file ~/$DASH/inbox/upload.txt$extra" ;;
+        *)
+            # sips (built into macOS) turns HEIC/TIFF/PSD/etc. into PNG the Pi can read,
+            # and shrinks huge photos so the upload is quick.
+            sips -s format png -Z 2000 "$what" --out "$tmp/upload.png" >/dev/null 2>&1 \
+                || { echo "can't read $what as an image"; exit 1; }
+            ssh "$PI" "mkdir -p ~/$DASH/inbox"
+            scp -q "$tmp/upload.png" "$PI:$DASH/inbox/upload.png"
+            ssh "$PI" "$SHOW image ~/$DASH/inbox/upload.png$extra" ;;
+    esac
+else
+    # Not a file: treat the argument as the message itself (sent via stdin, so any
+    # characters are safe).
+    printf '%s' "$what" | ssh "$PI" "$SHOW text --stdin$extra"
+fi

@@ -1,0 +1,39 @@
+#!/bin/bash
+# Mac notifications for the Kindle dashboard: battery low, Kindle not responding, Pi down.
+# Run every 5 minutes by launchd (see com.arham.kindle-watch.plist). Each problem notifies
+# once when it starts and once when it's fixed; state is kept in ~/.kindle-watch.
+PI="${KINDLE_PI:-arham@arham-pi}"
+DASH="${KINDLE_DASH:-kindle-dash}"
+LOW=20                  # battery % that counts as low
+OFFLINE_MIN=10          # Kindle unseen this long = not responding
+STATE="${KINDLE_WATCH_STATE:-$HOME/.kindle-watch}"
+
+notify() {
+    if [ -n "${KINDLE_WATCH_DRY:-}" ]; then echo "NOTIFY: $1 - $2"; return; fi   # for testing
+    osascript -e "display notification \"$2\" with title \"Kindle\" subtitle \"$1\""
+}
+was() { grep -qx "$1" "$STATE" 2>/dev/null; }
+set_flag() { was "$1" || echo "$1" >> "$STATE"; }
+clear_flag() { [ -f "$STATE" ] && grep -vx "$1" "$STATE" > "$STATE.tmp"; mv -f "$STATE.tmp" "$STATE" 2>/dev/null; }
+problem() {   # problem FLAG IS_BAD TITLE MESSAGE RECOVERED_MESSAGE
+    if [ "$2" = 1 ]; then was "$1" || notify "$3" "$4"; set_flag "$1"
+    elif was "$1"; then notify "$3" "$5"; clear_flag "$1"; fi
+}
+
+json=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$PI" "~/$DASH/venv/bin/python ~/$DASH/show.py health" 2>/dev/null)
+if [ -z "$json" ]; then
+    problem pi 1 "Raspberry Pi unreachable" "Can't reach $PI, so the Kindle isn't updating." ""
+    exit 0
+fi
+problem pi 0 "Raspberry Pi unreachable" "" "The Pi is back."
+
+read -r battery charging seen < <(python3 -c '
+import json, sys; d = json.loads(sys.argv[1])
+print(d["battery"] if d["battery"] is not None else -1, 1 if d["charging"] else 0,
+      d["seen_min_ago"] if d["seen_min_ago"] is not None else 9999)' "$json")
+
+offline=$(python3 -c "print(1 if float('$seen') > $OFFLINE_MIN else 0)")
+problem offline "$offline" "Kindle not responding" \
+    "Not seen for over $OFFLINE_MIN minutes. Unplugged, asleep, or USBNetwork off?" "The Kindle is back."
+low=0; [ "$battery" -ge 0 ] && [ "$battery" -le $LOW ] && [ "$charging" = 0 ] && low=1
+problem battery "$low" "Battery low" "The Kindle is at $battery%. Plug it in." "The Kindle is charging (or charged)."

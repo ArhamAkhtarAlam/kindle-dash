@@ -1,0 +1,4 @@
+# Lets "kindle update" restart the dashboard services without asking for a password.
+# Install:  sudo install -m 440 ~/kindle-dash/kindle-dash.sudoers /etc/sudoers.d/kindle-dash
+#           sudo visudo -c        (checks it; remove the file if it reports a problem)
+arham ALL=(root) NOPASSWD: /usr/bin/systemctl restart kindle-touch.service dashboard.timer

@@ -1,0 +1,25 @@
+# generated / downloaded / private (lives on the Pi, or rebuilt)
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+out/
+fonts/
+maps/
+engines/
+osu/
+slides/
+feeds/
+calendar/
+spotify/
+draw/
+video/
+inbox/
+kindle-files/
+doom/doomgeneric/
+doom/build/
+doom/doom-kindle
+doom/wads/
+mac/sim/icon.png
+# your own settings (city, ...): private
+local_settings.py

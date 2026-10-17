@@ -1,0 +1,12 @@
+[Unit]
+Description=Render weather and push it to the Kindle over USB
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=arham
+WorkingDirectory=/home/arham/kindle-dash
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/arham/kindle-dash/venv/bin/python /home/arham/kindle-dash/render.py
+ExecStart=/home/arham/kindle-dash/push.sh

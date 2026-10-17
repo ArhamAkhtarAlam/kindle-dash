@@ -1,0 +1,16 @@
+[Unit]
+Description=Kindle dashboard tap listener (to-do list)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=arham
+WorkingDirectory=/home/arham/kindle-dash
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/arham/kindle-dash/venv/bin/python /home/arham/kindle-dash/touch.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

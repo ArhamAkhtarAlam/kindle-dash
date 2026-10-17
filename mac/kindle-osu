@@ -1,0 +1,388 @@
+#!/usr/bin/python3
+"""osu! on the Kindle: the Pi runs the game on the Kindle, this Mac plays the song.
+
+  kindle osu pad [KEYS]            play the REAL osu!mania on this Mac with the Kindle as its keys:
+                                   the Kindle shows KEYS lanes (default 4); touching a lane holds
+                                   its key (4K: D F J K) in whatever app is in front, so open
+                                   osu! first. Needs Accessibility permission for this Terminal.
+                                   osu!'s columns show on the Kindle too, lined up with the lanes
+                                   (--no-screen for just the keys).
+
+  kindle osu                       pick a song (or play the demo if you have none)
+  kindle osu "song name" [diff]    play a song (any part of its name), easiest difficulty
+                                   unless you name one
+  kindle osu mania "song" [diff]   osu!mania: falling notes in lanes. Plays a mania difficulty
+                                   if the song has one, else turns a standard one into 4 lanes
+                                   (--keys=N for another number of lanes)
+  kindle osu demo                  the built-in metronome map (kindle osu mania demo works too)
+  kindle osu add ~/Downloads/x.osz [...]   add beatmaps (.osz files from osu.ppy.sh)
+  kindle osu list                  your songs and their difficulties
+  kindle osu offset [ms]           show/set the timing offset: + if circles are early
+                                   compared to the music, - if they're late
+  kindle osu folder                open the songs folder
+
+Ctrl+C here, or Quit on the Kindle, stops it. Easy/Normal difficulties suit e-ink best.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import zipfile
+
+LIB = os.path.expanduser(os.environ.get("KINDLE_OSU_LIB", "~/Library/Application Support/kindle-osu"))
+SONGS = os.path.join(LIB, "songs")
+CACHE = os.path.join(LIB, "cache")
+SETTINGS = os.path.join(LIB, "settings.json")
+PI = os.environ.get("KINDLE_PI", "arham@arham-pi")
+DASH = os.environ.get("KINDLE_DASH", "kindle-dash")
+REMOTE_MAP = "/tmp/kindle-osu.osu"
+
+
+def settings():
+    try:
+        with open(SETTINGS) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"offset": 0}
+
+
+def save_settings(s):
+    os.makedirs(LIB, exist_ok=True)
+    with open(SETTINGS, "w") as f:
+        json.dump(s, f)
+
+
+def field(text, key):
+    m = re.search(r"^%s\s*:\s*(.*)$" % re.escape(key), text, re.M)
+    return m.group(1).strip() if m else ""
+
+
+def songs():
+    """[(path, "Artist - Title", [(version, osu name in the zip, number of objects, mode, keys)])]
+    (mode 0 = standard, 3 = mania; taiko and catch maps are left out)"""
+    out = []
+    if not os.path.isdir(SONGS):
+        return out
+    for name in sorted(os.listdir(SONGS)):
+        if not name.lower().endswith(".osz"):
+            continue
+        path = os.path.join(SONGS, name)
+        try:
+            z = zipfile.ZipFile(path)
+        except zipfile.BadZipFile:
+            continue
+        diffs, title = [], name[:-4]
+        for n in z.namelist():
+            if n.lower().endswith(".osu"):
+                text = z.read(n).decode("utf-8", "replace")
+                mode = int(field(text, "Mode") or 0)
+                if mode not in (0, 3):
+                    continue                              # taiko/catch: not on the Kindle
+                title = "%s - %s" % (field(text, "Artist"), field(text, "Title"))
+                count = len(text.split("[HitObjects]", 1)[-1].strip().splitlines())
+                keys = int(float(field(text, "CircleSize") or 4)) if mode == 3 else 0
+                diffs.append((field(text, "Version"), n, count, mode, keys))
+        if diffs:
+            out.append((path, title, sorted(diffs, key=lambda d: d[2])))
+    return out
+
+
+def add(paths):
+    os.makedirs(SONGS, exist_ok=True)
+    for p in paths:
+        p = os.path.expanduser(p)
+        try:
+            names = zipfile.ZipFile(p).namelist()
+        except (OSError, zipfile.BadZipFile):
+            print("  not a beatmap (.osz) file: %s" % p)
+            continue
+        if not any(n.lower().endswith(".osu") for n in names):
+            print("  no maps inside %s" % p)
+            continue
+        shutil.copy(p, os.path.join(SONGS, os.path.basename(p)))
+        print("  added %s" % os.path.basename(p))
+
+
+def show_list(items):
+    if not items:
+        print("no songs yet: kindle osu add ~/Downloads/song.osz  (or: kindle osu demo)")
+    for i, (_, title, diffs) in enumerate(items, 1):
+        print("%2d. %s" % (i, title))
+        print("      " + "  ·  ".join("%s%s" % (v, " [mania %dK]" % k if m == 3 else "") for v, _, n, m, k in diffs))
+
+
+def pick(items, query, diff_query, mania=False):
+    if query:
+        q = query.lower()
+        hits = [s for s in items if q in s[1].lower() or q in os.path.basename(s[0]).lower()]
+        if not hits:
+            sys.exit("no song matching %r (kindle osu list)" % query)
+        song = hits[0]
+    else:
+        show_list(items)
+        answer = input("song number (Enter = 1): ").strip() or "1"
+        song = items[int(answer) - 1]
+    diffs = song[2]
+    if diff_query:
+        d = [x for x in diffs if diff_query.lower() in x[0].lower()]
+        if not d:
+            sys.exit("no difficulty matching %r: %s" % (diff_query, ", ".join(x[0] for x in diffs)))
+        return song, d[0]
+    if mania:                                              # a real mania map if there is one
+        native = [x for x in diffs if x[3] == 3]
+        if native:
+            return song, native[0]
+    standard = [x for x in diffs if x[3] == 0] or diffs
+    return song, standard[0]                               # the easiest (fewest circles)
+
+
+def audio_for(song_path, osu_text):
+    """Extract the song's audio to the cache (once). Returns its path."""
+    name = field(osu_text, "AudioFilename")
+    dest = os.path.join(CACHE, os.path.basename(song_path)[:-4], name)
+    if not os.path.exists(dest):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        z = zipfile.ZipFile(song_path)
+        match = next((n for n in z.namelist() if n.lower() == name.lower()), None)
+        if not match:
+            sys.exit("the song's audio (%s) isn't in the .osz" % name)
+        with open(dest, "wb") as f:
+            f.write(z.read(match))
+    return dest
+
+
+def demo_files():
+    """The Pi makes the demo map; this Mac needs its click track."""
+    out = subprocess.run(["ssh", PI, "cd ~/%s && venv/bin/python osu.py demo" % DASH],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit("couldn't make the demo on the Pi: " + out.stderr.strip()[-300:])
+    wav = os.path.join(CACHE, "demo", "demo.wav")
+    os.makedirs(os.path.dirname(wav), exist_ok=True)
+    if not os.path.exists(wav):
+        subprocess.run(["scp", "-q", "%s:%s/osu/demo.wav" % (PI, DASH), wav], check=True)
+    return "osu/demo.osu", wav
+
+
+def play(remote_map, audio, label, no_kindle=False, no_audio=False, quit_after=None, convert_keys=None):
+    offset = settings().get("offset", 0)
+    cmd = "cd ~/%s && exec venv/bin/python osu.py play %s --offset %d%s%s" % (
+        DASH, remote_map, offset, " --no-kindle" if no_kindle else "",
+        " --mania %d" % convert_keys if convert_keys else "")
+    game = subprocess.Popen(["ssh", PI, cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            text=True, bufsize=1)
+    player = [None]
+    print("starting %s on the Kindle..." % label, flush=True)
+    try:
+        line = game.stdout.readline().strip()
+        if not line.startswith("READY"):
+            print(line or "the game didn't start (is the Kindle connected?)")
+            return 1
+        lead = int(line.split()[1])
+        game.stdin.write("GO\n")
+        game.stdin.flush()
+        go = time.time()
+        if not no_audio:
+            def start_music():
+                time.sleep(max(0, lead / 1000 - (time.time() - go)))
+                player[0] = subprocess.Popen(["afplay", audio])
+            threading.Thread(target=start_music, daemon=True).start()
+        print("playing: tap the circles as the rings close in. Ctrl+C or Quit on the Kindle to stop.", flush=True)
+        if quit_after:
+            threading.Timer(quit_after, lambda: (game.stdin.write("QUIT\n"), game.stdin.flush())).start()
+        for line in game.stdout:
+            line = line.strip()
+            if line.startswith("RESULT"):
+                v = dict(kv.split("=") for kv in line.split()[1:])
+                print("score %s  ·  accuracy %s%%  ·  max combo %sx  ·  300: %s  100: %s  50: %s  miss: %s" % (
+                    "{:,}".format(int(v["score"])), v["acc"], v["max_combo"], v["300"], v["100"], v["50"], v["miss"]))
+                if player[0]:
+                    player[0].terminate()
+            elif line:
+                print(line)
+        game.wait()
+    except KeyboardInterrupt:
+        print("\nstopping...")
+        try:
+            game.stdin.write("QUIT\n")
+            game.stdin.flush()
+        except OSError:
+            pass
+        game.wait(20)
+    finally:
+        if player[0] and player[0].poll() is None:
+            player[0].terminate()
+    return 0
+
+
+# ------------------------------------------------------------ the pad
+KEYCODES = {"A": 0, "S": 1, "D": 2, "F": 3, "J": 38, "K": 40, "L": 37, ";": 41, "Space": 49}
+PAD_KEYS = {1: ["Space"], 2: ["F", "J"], 3: ["F", "Space", "J"], 4: ["D", "F", "J", "K"],
+            5: ["D", "F", "Space", "J", "K"], 6: ["S", "D", "F", "J", "K", "L"],
+            7: ["S", "D", "F", "Space", "J", "K", "L"], 8: ["A", "S", "D", "F", "J", "K", "L", ";"]}
+
+
+class Keyboard:
+    """Presses keys on this Mac (macOS's own CGEvent calls, through ctypes)."""
+
+    def __init__(self):
+        import ctypes
+        self.ct = ctypes
+        self.cg = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+        self.cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        self.cg.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
+        self.cg.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_bool]
+        self.cg.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+        self.cf.CFRelease.argtypes = [ctypes.c_void_p]
+        self.cg.AXIsProcessTrusted.restype = ctypes.c_bool
+
+    def allowed(self):
+        return bool(self.cg.AXIsProcessTrusted())
+
+    def key(self, code, down):
+        e = self.cg.CGEventCreateKeyboardEvent(None, code, down)
+        self.cg.CGEventPost(0, e)                          # kCGHIDEventTap: like a real keyboard
+        self.cf.CFRelease(e)
+
+
+PROJECT = os.path.expanduser(os.environ.get("KINDLE_PROJECT", "~/Documents/kindle tool/kindle-dash"))
+SIM_PYTHON = os.path.expanduser("~/Library/Application Support/Kindle Sim/venv/bin/python")
+
+
+def screen_feed(keys):
+    """osu!'s columns from this Mac onto the Kindle (mac/osu-screen.py | ssh ... osu.py frames)."""
+    script = os.path.join(PROJECT, "mac", "osu-screen.py")
+    if not (os.path.exists(script) and os.path.exists(SIM_PYTHON)):
+        print("(no picture on the Kindle: it needs the Kindle Sim's Python; run kindle sim once)")
+        return []
+    cap = subprocess.Popen([SIM_PYTHON, script, str(keys)], stdout=subprocess.PIPE)
+    sink = subprocess.Popen(["ssh", PI, "cd ~/%s && exec venv/bin/python osu.py frames %d" % (DASH, keys)],
+                            stdin=cap.stdout)
+    cap.stdout.close()                                     # (only the ssh reads it now)
+    return [cap, sink]
+
+
+def pad(keys, dry_run=False, show=True):
+    keys = max(1, min(8, keys))
+    names = PAD_KEYS[keys]
+    kb = Keyboard()
+    if not kb.allowed() and not dry_run:
+        print("macOS needs to let this Terminal press keys:")
+        print("  System Settings > Privacy & Security > Accessibility > turn on your Terminal app")
+        print("  (add it with + if it isn't listed), then run this again.")
+        subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+        return 1
+    # -tt: an interactive session, so ssh sends each line at once (no batching delay)
+    game = subprocess.Popen(["ssh", "-tt", PI, "cd ~/%s && exec venv/bin/python osu.py pad %d" % (DASH, keys)],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+    held, feed = set(), []
+    try:
+        for line in game.stdout:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if parts[0] == "READY":
+                print("the Kindle is now %d lanes: %s. Open osu!mania (%dK) and play; Ctrl+C or Stop on "
+                      "the Kindle ends it." % (keys, " ".join(names), keys), flush=True)
+                if show and not dry_run:
+                    feed = screen_feed(keys)
+                    if feed:
+                        print("osu!'s columns are shown on the Kindle too (about 0.2 s behind your Mac)", flush=True)
+            elif parts[0] in ("D", "U") and len(parts) == 2 and parts[1].isdigit():
+                lane = int(parts[1])
+                if lane < len(names):
+                    down = parts[0] == "D"
+                    (held.add if down else held.discard)(lane)
+                    if not dry_run:
+                        kb.key(KEYCODES[names[lane]], down)
+                    else:
+                        print(line.strip(), names[lane])
+            elif parts[0] == "QUIT":
+                break
+            elif parts[0] == "ERROR":
+                print(line.strip())
+    except KeyboardInterrupt:
+        try:
+            game.stdin.write("QUIT\n")
+            game.stdin.flush()
+        except OSError:
+            pass
+    finally:
+        for p in feed:
+            if p.poll() is None:
+                p.terminate()
+        for lane in held:
+            if not dry_run:
+                kb.key(KEYCODES[names[lane]], False)        # never leave a key stuck down
+        try:
+            game.wait(15)
+        except subprocess.TimeoutExpired:
+            game.kill()
+        print("pad stopped")
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    flags = {a for a in args if a.startswith("--")}
+    args = [a for a in args if not a.startswith("--")]
+    quit_after, keys = None, 4
+    for f in flags:
+        if f.startswith("--quit-after="):
+            quit_after = float(f.split("=")[1])
+        if f.startswith("--keys="):
+            keys = max(1, min(10, int(f.split("=")[1])))
+    mania = args[:1] == ["mania"]
+    if mania:
+        args = args[1:]
+    opts = dict(no_kindle="--no-kindle" in flags, no_audio="--no-audio" in flags, quit_after=quit_after)
+    if args[:1] in (["help"], ["-h"]):
+        print(__doc__)
+        return 0
+    if args[:1] in (["pad"], ["controller"]):
+        n = int(args[1]) if len(args) > 1 and args[1].rstrip("kK").isdigit() else 4
+        if len(args) > 1:
+            n = int(args[1].rstrip("kK"))
+        return pad(n, dry_run="--dry-run" in flags, show="--no-screen" not in flags)
+    if args[:1] == ["add"]:
+        add(args[1:])
+        return 0
+    if args[:1] == ["list"]:
+        show_list(songs())
+        return 0
+    if args[:1] == ["folder"]:
+        os.makedirs(SONGS, exist_ok=True)
+        subprocess.run(["open", SONGS])
+        return 0
+    if args[:1] == ["offset"]:
+        s = settings()
+        if len(args) > 1:
+            s["offset"] = int(float(args[1]))
+            save_settings(s)
+        print("timing offset: %+d ms" % s.get("offset", 0))
+        return 0
+    items = songs()
+    if args[:1] == ["demo"] or (not args and not items):
+        remote, wav = demo_files()
+        return play(remote, wav, "the demo (Metronome)%s" % (" as mania" if mania else ""),
+                    convert_keys=keys if mania else None, **opts)
+    song, (version, osu_name, _, mode, native_keys) = pick(items, args[0] if args else None,
+                                                           args[1] if len(args) > 1 else None, mania)
+    convert = keys if mania and mode == 0 else None
+    text = zipfile.ZipFile(song[0]).read(osu_name).decode("utf-8", "replace")
+    audio = audio_for(song[0], text)
+    r = subprocess.run(["ssh", PI, "cat > %s" % REMOTE_MAP], input=text, text=True)
+    if r.returncode != 0:
+        sys.exit("couldn't send the map to the Pi")
+    label = "%s [%s]%s" % (song[1], version, " as %d-lane mania" % convert if convert else
+                           " (mania %dK)" % native_keys if mode == 3 else "")
+    return play(REMOTE_MAP, audio, label, convert_keys=convert, **opts)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

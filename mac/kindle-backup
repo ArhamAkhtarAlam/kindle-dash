@@ -1,0 +1,52 @@
+#!/bin/bash
+# Back up the Kindle dashboard's data (and a snapshot of its code) from the Pi to this Mac.
+#   kindle-backup                run a backup now (also run nightly by launchd)
+#   kindle-backup list           show backups
+#   kindle-backup restore [DATE] put a backup's data back on the Pi (asks first)
+# Backups go to ~/Documents/Kindle Backups/YYYY-MM-DD/, the newest KEEP are kept.
+set -euo pipefail
+PI="${KINDLE_PI:-arham@arham-pi}"
+DASH="${KINDLE_DASH:-kindle-dash}"
+DEST="${KINDLE_BACKUPS:-$HOME/Documents/Kindle Backups}"
+KEEP=14
+# Your data (relative to ~/kindle-dash on the Pi). Left out on purpose: venv, caches, video
+# frames, Kindle install files, feed caches, and the Spotify login (just rerun spotify setup).
+DATA=(out/todos.json out/reminders.json out/games.json out/timer.json out/view out/dark
+      out/custom.json slides feeds/feeds.json calendar/calendars.json draw/strokes.json draw/saved)
+CODE_EXCLUDES=(--exclude venv --exclude out --exclude slides --exclude feeds --exclude calendar
+               --exclude spotify --exclude draw --exclude video --exclude kindle-files
+               --exclude inbox --exclude __pycache__ --exclude fonts)
+
+case "${1:-backup}" in
+    list)
+        ls -1 "$DEST" 2>/dev/null | sed 's/^/  /' || echo "  (no backups yet)"; exit 0 ;;
+    restore)
+        day="${2:-$(ls -1 "$DEST" | tail -1)}"
+        src="$DEST/$day/data"
+        [ -d "$src" ] || { echo "no backup called $day (see: kindle backup list)"; exit 1; }
+        read -r -p "Replace the Pi's current to-dos, reminders, slides, etc. with the $day backup? [y/N] " ok
+        [ "$ok" = y ] || [ "$ok" = Y ] || { echo "cancelled"; exit 0; }
+        rsync -a "$src/" "$PI:$DASH/"
+        echo "restored $day (screens will redraw within a minute)"; exit 0 ;;
+    backup) ;;
+    *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
+
+day=$(date +%Y-%m-%d)
+mkdir -p "$DEST/$day/data" "$DEST/$day/code"
+# Only copy data paths that exist on the Pi.
+existing=$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$PI" "cd ~/$DASH && ls -d ${DATA[*]} 2>/dev/null" || true)
+[ -n "$existing" ] || { echo "couldn't reach the Pi ($PI)"; exit 1; }
+for p in $existing; do
+    mkdir -p "$DEST/$day/data/$(dirname "$p")"
+    rsync -a "$PI:$DASH/$p" "$DEST/$day/data/$(dirname "$p")/"
+done
+rsync -a "${CODE_EXCLUDES[@]}" "$PI:$DASH/" "$DEST/$day/code/"
+chmod 600 "$DEST/$day/data/calendar/calendars.json" 2>/dev/null || true   # secret calendar links
+# Keep only the newest KEEP backups.
+all=$(ls -1d "$DEST"/20??-??-?? 2>/dev/null | sort)
+extra=$(( $(printf '%s\n' "$all" | grep -c . ) - KEEP ))
+if [ "$extra" -gt 0 ]; then printf '%s\n' "$all" | head -n "$extra" | while read -r old; do rm -rf "$old"; done; fi
+count=$(ls -1d "$DEST"/20??-??-?? | wc -l | tr -d ' ')
+total=$(du -sh "$DEST/$day" | cut -f1)
+echo "backed up to $DEST/$day ($total; $count backup(s) kept)"

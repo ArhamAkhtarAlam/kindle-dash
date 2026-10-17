@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Kindle dashboard every 1 minute(s)
+
+[Timer]
+# At the start of each minute, so the clock screen is never behind.
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
