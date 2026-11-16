@@ -91,6 +91,85 @@ def _forecast():
         return []
 
 
+def _now_playing():
+    """What Spotify is playing (or has paused), or None; never slows Home down for long."""
+    try:
+        import spotify
+        if not spotify.configured():
+            return None
+        m = spotify.current()
+        return m if m and m.get("title") else None
+    except Exception as e:
+        render.log("home: Spotify unavailable: %s" % e)
+        return None
+
+
+def _ago(ts):
+    mins = (time.time() - ts) / 60
+    return "now" if mins < 1 else "%dm ago" % mins if mins < 60 else "%dh ago" % (mins // 60) if mins < 1440 \
+        else "%dd ago" % (mins // 1440)
+
+
+def _feeds(img, d, y, bottom_y, lw, now, targets):
+    """The newest feed items in the space left: a picture if there's lots of room and the
+    newest item has one, else headlines. Returns the new y."""
+    if bottom_y - y < 96:
+        return y
+    try:
+        import feeds
+        latest = []
+        for f in feeds.load()["items"]:
+            for it in feeds.fetch(f)[0][:6]:
+                latest.append((it.get("date") or 0, f["name"], it))
+    except Exception as e:
+        render.log("home: feeds unavailable: %s" % e)
+        return y
+    if not latest:
+        return y
+    latest.sort(key=lambda x: -x[0])
+    top = y
+    head = render.ui_font(30, "bold")
+    small = render.ui_font(30)
+    d.text((M, y), "LATEST", font=head, fill=0)
+    y += 46
+    when, name, it = latest[0]
+    room = bottom_y - y
+    pic = None
+    if it.get("img") and room >= 300:
+        try:
+            import feeds
+            pic = feeds.picture(it["img"])
+        except Exception:
+            pic = None
+    if pic:
+        import show
+        cap = "%s · %s%s" % (name, it["title"], "  ·  " + _ago(when) if when else "")
+        d.text((M, y), _shorten(d, cap, small, lw), font=small, fill=0)
+        y += 42
+        box_w, box_h = lw, bottom_y - y
+        pic = pic.copy()
+        pic.thumbnail((box_w, box_h), Image.LANCZOS)
+        img.paste(show.to_16_grays(pic), (M, y))
+        d.rectangle((M, y, M + pic.width, y + pic.height), outline=0, width=2)
+        sx = M + pic.width + 24                        # the next headlines beside the picture
+        if M + lw - sx >= 220:
+            sy, sf, nf = y, render.ui_font(28, "semibold"), render.ui_font(22)
+            for when2, name2, it2 in latest[1:]:
+                if sy + 66 > y + pic.height:
+                    break
+                d.text((sx, sy), _shorten(d, it2["title"], sf, M + lw - sx), font=sf, fill=0)
+                d.text((sx, sy + 34), "%s%s" % (name2, "  ·  " + _ago(when2) if when2 else ""), font=nf, fill=0)
+                sy += 70
+        y += pic.height + 10
+    else:
+        for when, name, it in latest[:max(0, int(room // 76))]:
+            d.text((M, y), _shorten(d, it["title"], render.ui_font(32, "semibold"), lw), font=render.ui_font(32, "semibold"), fill=0)
+            d.text((M, y + 38), "%s%s" % (name, "  ·  " + _ago(when) if when else ""), font=render.ui_font(24), fill=0)
+            y += 76
+    targets.append({"action": "feeds", "box": [0, top - 10, M + lw + M, y]})
+    return y
+
+
 def _when(at, now):
     day = "today" if at.date() == now.date() else "tomorrow" if (at.date() - now.date()).days == 1 \
         else at.strftime("%a")
@@ -137,39 +216,79 @@ def draw(w, h, now=None):
     d.line((M, y, split - M, y), fill=0, width=3)
     y += 28
 
-    # ---- left: coming up
-    head = render.ui_font(30, "bold")
-    small = render.ui_font(34)
-    items = []
-    st = timer.load()
-    if timer.running(st):
-        left = int(timer.remaining(st) + 0.999)
-        items.append(("Timer", "%d:%02d left" % (left // 60, left % 60)))
-    for at, text in _coming_up(now):
-        items.append((_when(at, now), text))
-    if items:
-        d.text((M, y), "COMING UP", font=head, fill=0)
-        y += 46
-        for when, text in items[:3]:
-            d.text((M, y), when, font=render.ui_font(34, "semibold"), fill=0)
-            wx = M + max(190, d.textlength(when, font=render.ui_font(34, "semibold")) + 24)
-            d.text((wx, y), _shorten(d, text, small, split - M - wx), font=small, fill=0)
-            y += 50
-        y += 18
+    # ---- left: whatever matters now (timer, music, coming up, to-dos), then feeds fill the rest
     days = _forecast()
     fy = h - M - 160 if days else h - M                 # the 3-day forecast sits at the bottom
-    todos = [t for t in todo.load() if not t.get("done")]
-    ty = y
-    d.text((M, y), "TO-DO" + ("  ·  %d left" % len(todos) if todos else ""), font=head, fill=0)
-    y += 46
-    room = max(0, int((fy - 30 - y) // 50))
-    if not todos:
-        d.text((M, y), "Nothing to do", font=small, fill=0)
-    for t in todos[:room]:
-        d.rectangle((M, y + 6, M + 28, y + 34), outline=0, width=3)
-        d.text((M + 46, y), _shorten(d, t["text"], small, lw - 46), font=small, fill=0)
-        y += 50
-    targets.append({"action": "todo", "box": [0, ty - 10, split, fy - 20]})
+    bottom_y = fy - 26
+    head = render.ui_font(30, "bold")
+    small = render.ui_font(34)
+    semi = render.ui_font(34, "semibold")
+
+    st = timer.load()                                   # 1. a running timer
+    if timer.running(st) and bottom_y - y >= 100:
+        left = int(timer.remaining(st) + 0.999)
+        ends = datetime.fromtimestamp(st["ends"]).strftime("%-I:%M %p").lower()
+        d.text((M, y), "TIMER", font=head, fill=0)
+        t = "%d:%02d left" % (left // 60, left % 60) if left < 3600 else "%dh %02dm left" % (left // 3600, left % 3600 // 60)
+        d.text((M, y + 40), t, font=render.ui_font(54, "bold"), fill=0)
+        d.text((M + lw, y + 58), "done at " + ends, font=small, fill=0, anchor="ra")
+        targets.append({"action": "timer", "box": [0, y - 10, split, y + 110]})
+        y += 124
+
+    music = _now_playing()                              # 2. music playing on Spotify
+    if music and bottom_y - y >= 170:
+        art = 150
+        try:
+            import show
+            import spotify
+            cover = spotify._art(music["art"]) if music.get("art") else None
+            if cover:
+                cover = show.to_16_grays(cover.resize((art, art), Image.LANCZOS))
+                img.paste(cover, (M, y))
+                d.rectangle((M, y, M + art, y + art), outline=0, width=2)
+        except Exception as e:
+            render.log("home: album art unavailable: %s" % e)
+            cover = None
+        tx = M + (art + 24 if cover else 0)
+        tw = split - M - tx
+        d.text((tx, y), "NOW PLAYING" + ("" if music["playing"] else "  ·  paused"), font=head, fill=0)
+        d.text((tx, y + 42), _shorten(d, music["title"], semi, tw), font=semi, fill=0)
+        d.text((tx, y + 88), _shorten(d, music["artist"], small, tw), font=small, fill=0)
+        if music.get("duration"):
+            frac = min(1, music["progress"] / music["duration"])
+            _bar(d, tx, y + 136, tw - 110, frac)
+            d.text((tx + tw, y + 128), "%d:%02d" % divmod(int(music["duration"] - music["progress"]), 60),
+                   font=render.ui_font(24), fill=0, anchor="ra")
+        targets.append({"action": "spotify", "box": [0, y - 10, split, y + art + 10]})
+        y += art + 30
+
+    items = [(_when(at, now), text) for at, text in _coming_up(now)]     # 3. coming up
+    rows = min(len(items), max(0, int((bottom_y - y - 46) // 50)))
+    if rows:
+        d.text((M, y), "COMING UP", font=head, fill=0)
+        y += 46
+        for when, text in items[:rows]:
+            d.text((M, y), when, font=semi, fill=0)
+            wx = M + max(190, d.textlength(when, font=semi) + 24)
+            d.text((wx, y), _shorten(d, text, small, split - M - wx), font=small, fill=0)
+            y += 50
+        y += 22
+
+    todos = [t for t in todo.load() if not t.get("done")]               # 4. to-dos, if any
+    rows = min(len(todos), max(0, int((bottom_y - y - 46) // 50)))
+    if rows:
+        ty = y
+        d.text((M, y), "TO-DO  ·  %d left" % len(todos), font=head, fill=0)
+        y += 46
+        for t in todos[:rows]:
+            d.rectangle((M, y + 6, M + 28, y + 34), outline=0, width=3)
+            d.text((M + 46, y), _shorten(d, t["text"], small, lw - 46), font=small, fill=0)
+            y += 50
+        targets.append({"action": "todo", "box": [0, ty - 10, split, y]})
+        y += 22
+
+    y = _feeds(img, d, y, bottom_y, lw, now, targets)                  # 5. feeds fill what's left
+
     if days:
         d.line((M, fy - 16, split - M, fy - 16), fill=0, width=3)
         cw = lw / len(days)

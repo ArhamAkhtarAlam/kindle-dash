@@ -23,12 +23,15 @@ To try them with the mouse, see [Kindle Sim](#kindle-sim-test-on-the-mac).</sub>
 
 <img src="docs/screens/home.png" alt="Home screen" width="560">
 
-`kindle home` (or Home in the menu): a big clock, the date and today's weather, what's coming up
-(next calendar event or reminder, a running timer), your to-dos and a 3-day forecast on the left;
-the Pi on the right (CPU, temperature, memory, disk, uptime, network right now, a CPU graph of the
-last hour with gaps where there were no readings, any throttling warning) and the Kindle's battery
-and link. Redrawn every minute (a full flash only every `CLOCK_FULL_REFRESH_EVERY` minutes). Tap
-the clock, weather, to-dos or the Pi card to open that screen. It's where the Kindle goes back to
+`kindle home` (or Home in the menu): a big clock, the date and today's weather, then the left side
+adapts to what matters right now, in this order: a running **timer** (time left, when it's done),
+**now playing** on Spotify (cover, song, artist, progress), **coming up** (next calendar event and
+reminder), your **to-dos** (only if you have any), and the **latest from your feeds** in whatever
+space is left: the newest picture with the next headlines beside it when there's room, else
+headlines. A 3-day forecast sits at the bottom. On the right, the Pi (CPU, temperature, memory, disk,
+uptime, network right now, a CPU graph of the last hour, any throttling warning) and the Kindle's
+battery and link. Redrawn every minute (a full flash only every `CLOCK_FULL_REFRESH_EVERY` minutes);
+tap any part to open its screen. It's where the Kindle goes back to
 when a picture or message with `--minutes` expires.
 
 ## Show your own image or text (from the Mac)
