@@ -1,64 +1,86 @@
 #!/bin/bash
-# Put things on the Kindle from your Mac (via the Pi).
-#
-#   kindle photo.jpg               show an image (jpg, png, heic, gif, webp, ...)
-#   kindle notes.txt               show a text file
-#   kindle "Back at 5pm"           show a message
-#   echo "hello" | kindle -        show text from a pipe
-#   kindle wttr   (or weather)     back to the weather dashboard
-#   kindle wttr2  (or weather2)    weather in wttr.in's v2 view (graph)
-#   kindle wttrmoon (weathermoon)  moon phase (wttr.in/moon)
-#   kindle status                  what is showing now
-#   kindle sim                     the dashboard in a window on this Mac, for testing (mouse = touch)
-#   kindle weathermap [rain|clouds|wind|temp] [state|country]   weather map with a time slider
-#   kindle mandelbrot [reset]      Mandelbrot set viewer: tap to zoom in, swipe to move
-#   kindle synth                   the Kindle as a keyboard, sound from this Mac (kindle synth test: sound check)
-#   kindle osu [song] | add FILE.osz | list | demo | offset MS   osu! (the song plays on the Mac)
-#   kindle doom [gray] [wad]       DOOM on the Kindle (touch buttons); kindle doom stop | wads | wad FILE
-#   kindle todo                    show the to-do list (tap a row on the Kindle to tick it)
-#   kindle todo add "buy milk"     add / remove / done / clear / list
-#   kindle reminders add "Stretch" 9:00am [Mon,Wed]   once, or on those days
-#   kindle reminders [remove|dismiss|test]
-#   kindle slides                  slideshow (swipe left/right on the Kindle); also: slideshow
-#   kindle slides add ~/Pictures/x.jpg [fit|fill]   fit = whole picture, fill = fill the screen
-#   kindle slides list | show "name" | remove "name"
-#   kindle slides fill [name]      switch all pictures (or one) to fill the screen; fit = back
-#   kindle home                    Home (the default): clock, weather, to-dos, coming up, Pi vitals
-#   kindle clock [analog|digital|both]   clock face and/or digital time (tap it to switch)
-#   kindle feeds                   RSS feeds (swipe left/right; tap a headline to read it)
-#   kindle feeds add URL ["Name"] [headlines|image]   also: list, show, remove, refresh
-#   kindle xkcd                    the xkcd feed
-#   kindle calendar                month + agenda (swipe left/right for other weeks)
-#   kindle calendar add "ICAL_LINK" "Name"   also: list, remove, next, prev, today
-#   kindle brightness 40%          front light (also: off, max, up, down)
-#   kindle wifi [on|off]           Kindle Wi-Fi (used when the USB cable is unplugged)
-#   kindle video ~/Movies/clip.mp4 play a video (sound on the Mac); tap the Kindle to stop
-#   kindle badapple                Bad Apple, from ~/Documents/bad apple/badapple.mp4
-#   kindle mirror [gray]           mirror this Mac's screen (Ctrl+C or tap the Kindle to stop)
-#   kindle mirror pi [gray]        the Kindle becomes the Raspberry Pi's screen
-#   kindle yt "YOUTUBE_LINK" [gray]   watch a YouTube video on the Kindle (sound on this Mac)
-#   kindle games [chess|checkers|ttt|c4|reversi|battleship|sudoku|mines] [pi|2p] [easy|normal|hard]
-#   kindle spotify                 now playing + buttons; also: setup, play, pause, next, prev, volume 40
-#   kindle draw                    drawing pad; "kindle draw save" downloads the drawing here
-#   kindle timer [25m|pause|resume|reset|add 5m]   countdown (buttons on the Kindle too)
-#   kindle dark [on|off]           dark mode (photos and slides stay normal)
-#   kindle stats                   Pi stats screen (CPU, temperature, memory, disk, network)
-#   kindle speedtest [down|up]     internet speed test from the Pi (~10 s each)
-#   kindle hackers                 the honeypot's password of the day and today's attacks
-#   kindle backup [list|restore DATE]   back up the Pi's data to ~/Documents/Kindle Backups
-#   kindle update                  send the latest code to the Pi, update these commands, restart
-#   kindle kiosk on|off            pause/resume the Kindle's own UI (needed for taps)
-#
-# Add --minutes N to switch back to the weather after N minutes:
-#   kindle "In a meeting" --minutes 45
+# Put things on the Kindle from your Mac (via the Pi). `kindle help` lists everything.
 set -euo pipefail
 
 PI="${KINDLE_PI:-arham@arham-pi}"
 DASH="${KINDLE_DASH:-kindle-dash}"          # folder on the Pi, relative to ~
 SHOW="~/$DASH/venv/bin/python ~/$DASH/show.py"
 
-if [ $# -eq 0 ] || [ "$1" = -h ] || [ "$1" = --help ]; then
-    sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'
+usage() {
+    local b="" n="" d=""
+    if [ -t 1 ]; then b=$'\033[1m'; d=$'\033[2m'; n=$'\033[0m'; fi
+    cat <<EOF
+${b}kindle${n}: everything you can do with the Kindle dashboard (from this Mac, via the Pi)
+${d}kindle help WORD searches this list, e.g. kindle help osu${n}
+
+${b}Screens${n}
+  kindle home                    Home (the default): clock, weather, timer, music, to-dos, feeds, Pi vitals
+  kindle clock [analog|digital|both]   clock face and/or digital time (tap it to switch)
+  kindle wttr / wttr2 / wttrmoon weather: 3-day table / graph / moon phase (also weather, weather2)
+  kindle weathermap [rain|clouds|wind|temp] [state|country]   weather map with a time slider and Play
+  kindle calendar                month + agenda (swipe for other weeks)
+  kindle feeds / kindle xkcd     RSS feeds (swipe; tap a headline to read it) / the xkcd feed
+  kindle stats                   Pi stats: CPU, temperature, memory, disk, network, processes, mirroring
+  kindle hackers                 the honeypot's password of the day and today's attacks
+  kindle status                  what's showing now, and the Kindle's battery
+
+${b}Your stuff${n}
+  kindle photo.jpg               show a picture (jpg, png, heic, gif, webp, ...)
+  kindle notes.txt               show a text file
+  kindle "Back at 5pm"           show a message;  echo "hi" | kindle -   from a pipe
+      add --minutes 45 to go back to Home after that long
+  kindle todo                    the to-do list (tap a row to tick it)
+  kindle todo add "buy milk"     also: remove, done, clear, list
+  kindle reminders add "Stretch" 9:00am [Mon,Wed]   once, or on those days; also: remove, dismiss, test
+  kindle timer [25m|pause|resume|reset|add 5m]   countdown (buttons on the Kindle too)
+  kindle slides                  slideshow (swipe left/right)
+  kindle slides add ~/Pictures/x.jpg [fit|fill]   also: list, show NAME, remove NAME, fill/fit [NAME]
+  kindle feeds add URL ["Name"] [headlines|image]   also: list, show, remove, refresh
+  kindle calendar add "ICAL_LINK" "Name"   also: list, remove, next, prev, today
+  kindle draw                    drawing pad;  kindle draw save  brings the drawing to this Mac
+
+${b}Play${n}
+  kindle games [chess|checkers|ttt|c4|reversi|battleship|sudoku|mines] [pi|2p] [easy|normal|hard|impossible]
+  kindle synth                   the Kindle as keys, drum pads, beat grid and note editor; sound from this Mac
+  kindle synth test              a quick sound check on this Mac
+  kindle osu pad [KEYS]          play the real osu!mania on this Mac with the Kindle as the keys and screen
+  kindle osu ["song"] [diff]     the built-in osu! on the Kindle (music on this Mac)
+  kindle osu mania "song"        ...as falling-note mania;  also: add FILE.osz, list, demo, offset MS
+  kindle doom [gray] [wad]       DOOM on the Kindle (touch buttons);  also: stop, wads, wad FILE
+  kindle mandelbrot [reset]      Mandelbrot viewer: tap to zoom, swipe to move (also: fractal)
+  kindle spotify                 now playing + buttons;  also: setup, play, pause, next, prev, volume 40
+
+${b}Watch${n}
+  kindle mirror [gray]           mirror this Mac's screen (Ctrl+C or tap the Kindle to stop)
+  kindle mirror pi [gray]        the Kindle becomes the Raspberry Pi's screen
+  kindle video ~/Movies/clip.mp4 play a video (sound on this Mac); tap the Kindle to stop
+  kindle yt "YOUTUBE_LINK" [gray]   watch a YouTube video (sound on this Mac)
+  kindle badapple                Bad Apple!!
+
+${b}Kindle settings${n}
+  kindle brightness 40%          front light (also: off, max, up, down)
+  kindle dark [on|off]           dark mode (photos and slides stay normal)
+  kindle wifi [on|off]           the Kindle's Wi-Fi (used when the USB cable is unplugged)
+  kindle kiosk on|off            pause/resume the Kindle's own UI (needed for taps)
+
+${b}Pi and this Mac${n}
+  kindle speedtest [down|up]     internet speed test from the Pi (~10 s each)
+  kindle update                  send the latest code to the Pi, update these commands, restart
+  kindle backup [list|restore DATE]   back up the Pi's data to ~/Documents/Kindle Backups
+  kindle sim                     the dashboard in a window on this Mac, for testing (mouse = touch)
+  kindle help [WORD]             this list (or just the lines about WORD)
+
+${d}On the Kindle: swipe down from the top for the menu; double-tap anywhere for a clean refresh.${n}
+EOF
+}
+
+if [ $# -eq 0 ] || [ "$1" = -h ] || [ "$1" = --help ] || [ "$1" = help ]; then
+    if [ "${1:-}" = help ] && [ -n "${2:-}" ]; then
+        found=$(usage | sed 's/\x1b\[[0-9;]*m//g' | grep -i -- "$2" | grep "^ " || true)
+        if [ -n "$found" ]; then echo "$found"; else echo "nothing about \"$2\" (try: kindle help)"; fi
+    else
+        usage
+    fi
     exit 0
 fi
 
